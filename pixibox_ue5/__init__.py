@@ -5,7 +5,7 @@ from .remote_control import RemoteControlAPI
 from .importer import AssetImporter
 from .config import Config
 
-__version__ = "0.1.0"
+__version__ = "2.1.0"
 __author__ = "Pixibox.ai"
 
 __all__ = [

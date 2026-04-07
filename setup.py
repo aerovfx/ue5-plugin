@@ -8,7 +8,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="pixibox-ue5-bridge",
-    version="0.1.0",
+    version="2.1.0",
     author="Pixibox.ai",
     author_email="dev@pixibox.ai",
     description="Python bridge for seamless Pixibox.ai to Unreal Engine 5 integration",
@@ -17,7 +17,7 @@ setup(
     url="https://github.com/pixibox-ai/ue5-bridge",
     project_urls={
         "Bug Tracker": "https://github.com/pixibox-ai/ue5-bridge/issues",
-        "Documentation": "https://docs.pixibox.ai/ue5-bridge",
+        "Documentation": "https://pixibox.ai/plugins/unreal/docs",
         "Source Code": "https://github.com/pixibox-ai/ue5-bridge",
     },
     packages=find_packages(),

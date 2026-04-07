@@ -2,13 +2,14 @@
 
 import time
 import logging
-from typing import Optional
+from typing import Optional, Set
 from pathlib import Path
 
 import requests
 
 from .bridge import Bridge
 from .config import Config
+from .live_bridge import LiveBridge
 
 
 logger = logging.getLogger(__name__)
@@ -40,11 +41,14 @@ class SyncDaemon:
         self.dry_run = dry_run
         self._running = False
         self._last_sync_time = 0
+        self._imported_ids: Set[str] = set()
+        self._live_bridge: Optional[LiveBridge] = None
 
     def start(self) -> None:
         """Start the sync daemon (blocking).
 
-        Connects to UE5 and polls Pixibox API for new generations.
+        Connects to UE5 and uses Live Bridge for real-time updates.
+        Falls back to polling if Live Bridge unavailable.
         Press Ctrl+C to stop.
         """
         logger.info("Starting Pixibox UE5 sync daemon...")
@@ -60,16 +64,25 @@ class SyncDaemon:
 
             self._running = True
 
+            # Try to start Live Bridge
+            self._try_start_live_bridge()
+
             # Main loop
             while self._running:
                 try:
-                    self._sync()
+                    # Check for Live Bridge events
+                    if self._live_bridge:
+                        self._check_live_bridge_events()
+                    else:
+                        # Fallback to polling
+                        self._sync()
+
                 except KeyboardInterrupt:
                     break
                 except Exception as e:
                     logger.error(f"Sync error: {e}")
 
-                time.sleep(self.poll_interval)
+                time.sleep(self.poll_interval if not self._live_bridge else 1)
 
         except Exception as e:
             logger.error(f"Failed to start daemon: {e}")
@@ -79,14 +92,66 @@ class SyncDaemon:
     def stop(self) -> None:
         """Stop the sync daemon."""
         self._running = False
+        if self._live_bridge:
+            self._live_bridge.stop_listener()
+            self._live_bridge.disconnect()
         self.bridge.disconnect()
         logger.info("Sync daemon stopped")
 
-    def _sync(self) -> None:
-        """Perform one sync cycle.
+    def _try_start_live_bridge(self) -> None:
+        """Try to start Live Bridge connection.
 
-        Fetches recent generations from Pixibox API and imports those
-        that match auto-import rules.
+        Silently fails and falls back to polling if unavailable.
+        """
+        try:
+            api_url = self.config.get("api_url")
+            api_token = self.config.get("api_token")
+
+            if not api_url or not api_token:
+                logger.warning("Live Bridge: api_url or api_token not configured")
+                return
+
+            self._live_bridge = LiveBridge(api_url, api_token)
+            self._live_bridge.connect()
+            self._live_bridge.start_listener()
+            logger.info("Live Bridge connected and listening")
+
+        except Exception as e:
+            logger.warning(f"Live Bridge unavailable, falling back to polling: {e}")
+            self._live_bridge = None
+
+    def _check_live_bridge_events(self) -> None:
+        """Check for events from Live Bridge queue.
+
+        Processes dcc_push events without blocking.
+        """
+        if not self._live_bridge:
+            return
+
+        auto_import_config = self.config.get("auto_import", {})
+        if not auto_import_config.get("enabled", False):
+            return
+
+        content_path = auto_import_config.get("content_path", "/Game/Pixibox/Models")
+        spawn_actors = auto_import_config.get("spawn_actors", False)
+
+        # Non-blocking check for events
+        event = self._live_bridge.get_event(timeout=0.1)
+        if event:
+            generation_id = event.get("generation_id")
+
+            # Avoid duplicate imports
+            if generation_id and generation_id not in self._imported_ids:
+                self._imported_ids.add(generation_id)
+                self._import_generation(
+                    generation_id, content_path, spawn_actors, auto_import_config
+                )
+
+    def _sync(self) -> None:
+        """Perform one sync cycle (polling fallback).
+
+        Fetches completed generations from Pixibox API and imports those
+        that haven't been imported yet.
         """
         auto_import_config = self.config.get("auto_import", {})
 
@@ -98,10 +163,10 @@ class SyncDaemon:
         content_path = auto_import_config.get("content_path", "/Game/Pixibox/Models")
         spawn_actors = auto_import_config.get("spawn_actors", False)
 
-        # Fetch recent generations from Pixibox API
+        # Fetch completed generations from Pixibox API
         try:
             headers = {"Authorization": f"Bearer {api_token}"}
-            url = f"{api_url}/api/generations/recent"
+            url = f"{api_url}/api/v1/generations?limit=10&offset=0&status=completed"
             response = requests.get(url, headers=headers, timeout=5)
             response.raise_for_status()
 
@@ -109,15 +174,13 @@ class SyncDaemon:
 
             for gen in generations:
                 generation_id = gen.get("id")
-                created_at = gen.get("created_at", 0)
 
-                # Only import if created after last sync
-                if created_at > self._last_sync_time:
+                # Only import if not already imported
+                if generation_id and generation_id not in self._imported_ids:
+                    self._imported_ids.add(generation_id)
                     self._import_generation(
                         generation_id, content_path, spawn_actors, auto_import_config
                     )
-
-            self._last_sync_time = time.time()
 
         except Exception as e:
             logger.error(f"Failed to fetch generations: {e}")

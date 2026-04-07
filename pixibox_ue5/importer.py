@@ -60,11 +60,19 @@ class AssetImporter:
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Download from Pixibox API
-        url = urljoin(self.api_url, f"/api/generations/{generation_id}/download")
-        params = {"format": format.lower()}
+        # First, get generation details to retrieve modelUrl
+        gen_url = urljoin(self.api_url, f"/api/v1/generations/{generation_id}")
+        gen_response = requests.get(gen_url, headers=self._headers, timeout=10)
+        gen_response.raise_for_status()
 
-        response = requests.get(url, params=params, headers=self._headers, stream=True)
+        gen_data = gen_response.json()
+        model_url = gen_data.get("modelUrl")
+
+        if not model_url:
+            raise RuntimeError(f"No modelUrl in generation {generation_id}")
+
+        # Download from model URL (GCS signed URL, no auth needed)
+        response = requests.get(model_url, stream=True, timeout=30)
         response.raise_for_status()
 
         # Save to file
